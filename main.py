@@ -1,5 +1,9 @@
 from openai import OpenAI
 from datetime import date
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import os
 
 client = OpenAI()  # API key picked automatically from env
 
@@ -63,10 +67,54 @@ STRUCTURE:
 Only include **actual news items**, not invented summaries or filler.
 """
 
+def get_receivers_from_sheet():
+    creds_json = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+
+    creds = Credentials.from_service_account_info(
+        creds_json,
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    )
+
+    service = build("sheets", "v4", credentials=creds)
+
+    SPREADSHEET_ID = "1EpUEplXCxIG4qT-da5Wp1r63849u_vdl11PZ9siXFeA"
+    RANGE = "Sheet1!A2:A"
+
+    sheet = service.spreadsheets()
+    result = sheet.values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=RANGE
+    ).execute()
+
+    values = result.get("values", [])
+
+    return [row[0] for row in values if row]
+
+ def send_email(subject, body):
+    sender = os.environ["EMAIL_ADDRESS"]
+    password = os.environ["EMAIL_APP_PASSWORD"]
+    receiver = sender 
+
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = receiver
+    msg["Subject"] = subject
+
+    msg.attach(MIMEText(body, "plain"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(sender, password)
+        server.send_message(msg)
+           
 response = client.responses.create(
     model="gpt-4.1-mini",
     input=PROMPT,
     max_output_tokens=1200  
+)
+receivers = get_receivers_from_sheet()
+send_email(
+    subject="📊 Daily AI Market & Tech Digest",
+    body=response.output_text
 )
 
 print("\n===== DAILY DIGEST =====\n")
