@@ -4,6 +4,11 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
+import json
+from dotenv import load_dotenv
+load_dotenv()
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
 client = OpenAI()  # API key picked automatically from env
 
@@ -79,7 +84,7 @@ def get_receivers_from_sheet():
     SPREADSHEET_ID = "1EpUEplXCxIG4qT-da5Wp1r63849u_vdl11PZ9siXFeA"
     RANGE = "Sheet1!A2:A"
 
-    sheet = service.spreadsheets()
+    sheet = service.spreadsheets()  # pylint: disable=no-member
     result = sheet.values().get(
         spreadsheetId=SPREADSHEET_ID,
         range=RANGE
@@ -89,32 +94,31 @@ def get_receivers_from_sheet():
 
     return [row[0] for row in values if row]
 
-def send_email(subject, body):
+def send_email(subject, body, receivers):
     sender = os.environ["EMAIL_ADDRESS"]
     password = os.environ["EMAIL_APP_PASSWORD"]
-    receiver = sender 
 
     msg = MIMEMultipart()
     msg["From"] = sender
-    msg["To"] = receiver
+    msg["To"] = ", ".join(receivers)  # Convert list to comma-separated string
     msg["Subject"] = subject
 
     msg.attach(MIMEText(body, "plain"))
-
+    print(f"Sending email to: {receivers}...")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(sender, password)
         server.send_message(msg)
+    
 
-response = client.responses.create(
+'''response = client.responses.create(
     model="gpt-4.1-mini",
     input=PROMPT,
     max_output_tokens=1200  
-)
+)'''
 receivers = get_receivers_from_sheet()
 send_email(
     subject="📊 Daily AI Market & Tech Digest",
-    body=response.output_text
+    body="Test email body from actions",
+    receivers=receivers
 )
 
-print("\n===== DAILY DIGEST =====\n")
-print(response.output_text)
