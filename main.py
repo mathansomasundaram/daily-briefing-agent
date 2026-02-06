@@ -66,7 +66,6 @@ STRUCTURE:
 
 Only include **actual news items**, not invented summaries or filler.
 """
-
 def get_receivers_from_sheet():
     creds_json = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 
@@ -90,7 +89,7 @@ def get_receivers_from_sheet():
 
     return [row[0] for row in values if row]
 
- def send_email(subject, body):
+def send_email(subject, body):
     sender = os.environ["EMAIL_ADDRESS"]
     password = os.environ["EMAIL_APP_PASSWORD"]
     receiver = sender 
@@ -105,7 +104,7 @@ def get_receivers_from_sheet():
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(sender, password)
         server.send_message(msg)
-           
+
 response = client.responses.create(
     model="gpt-4.1-mini",
     input=PROMPT,
