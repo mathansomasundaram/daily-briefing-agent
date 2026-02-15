@@ -12,9 +12,10 @@
         "ipos",
         "company_results",
         "tech_ai",
-        "tech_cybersecurity"
+        "tech_cybersecurity",
+        "state_news_tn"
       ],
-      "last_run_timestamp": "2026-02-14T17:18:51.432692Z",
+      "last_run_timestamp": "2026-02-15T09:47:36.277279Z",
       "active": true
     }
   ]

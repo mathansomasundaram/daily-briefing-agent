@@ -36,6 +36,12 @@ class LLMFormatter:
         self.logger = logger
         # Get emojis dynamically from configuration
         self.category_emojis = get_all_category_emojis()
+        # Track token usage
+        self.token_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+        }
 
     def build_prompt(self, articles_by_category: Dict[str, List[Dict]], is_batch: bool = False) -> str:
         """
@@ -164,10 +170,10 @@ Here is your Daily Market & Tech Digest for {today}:
 [For EVERY category that has articles, create a section with:]
 
 **[Category Heading with Emoji]**
-- [Article 1: Very brief 1-2 line summary]
+- [Article 1: Very brief 2-3 line summary]
   Source: [Source] | [URL]
 
-- [Article 2: Very brief 1-2 line summary]
+- [Article 2: Very brief 2-3 line summary]
   Source: [Source] | [URL]
 
 [Continue for all articles in category]
@@ -179,7 +185,7 @@ Here is your Daily Market & Tech Digest for {today}:
 Best regards,
 Your Daily Briefing Agent
 
-CRITICAL: Include ALL categories. Be extremely concise (1-2 lines per article). Do NOT add information from your knowledge base."""
+CRITICAL: Include ALL categories. Be extremely concise (2-3 lines per article). Do NOT add information from your knowledge base."""
 
         return prompt
 
@@ -261,9 +267,12 @@ CRITICAL: Include ALL categories. Be extremely concise (1-2 lines per article). 
                 self.logger.warning("Empty response from LLM for batch")
                 return self._fallback_format(batch_articles)
 
-            # Log token usage for this batch
+            # Log and track token usage for this batch
             if response.usage:
                 usage = response.usage
+                self.token_usage["input_tokens"] += usage.prompt_tokens
+                self.token_usage["output_tokens"] += usage.completion_tokens
+                self.token_usage["total_tokens"] += usage.total_tokens
                 self.logger.info(
                     f"Batch token usage - Input: {usage.prompt_tokens}, "
                     f"Output: {usage.completion_tokens}, Total: {usage.total_tokens}"
@@ -315,9 +324,12 @@ CRITICAL: Include ALL categories. Be extremely concise (1-2 lines per article). 
                     self.logger.warning("Empty response from LLM")
                     return self._fallback_format(articles_by_category)
 
-                # Log token usage
+                # Log and track token usage
                 if response.usage:
                     usage = response.usage
+                    self.token_usage["input_tokens"] = usage.prompt_tokens
+                    self.token_usage["output_tokens"] = usage.completion_tokens
+                    self.token_usage["total_tokens"] = usage.total_tokens
                     self.logger.info(
                         f"Token usage - Input: {usage.prompt_tokens}, "
                         f"Output: {usage.completion_tokens}, Total: {usage.total_tokens}"

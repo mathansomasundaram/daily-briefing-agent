@@ -34,6 +34,7 @@ from email_service import send_email
 from utils.logger import setup_logger
 from utils.date_utils import parse_timestamp
 from config import EMAIL_SUBJECT
+import json
 
 # Load environment variables
 load_dotenv()
@@ -43,10 +44,50 @@ logger = setup_logger(__name__)
 
 # Initialize Azure OpenAI client
 client = AzureOpenAI(
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+    api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", "")
 )
+
+# Token usage file path
+TOKEN_USAGE_FILE = project_root / "data" / "token_usage.json"
+
+
+def save_token_usage(user_id: str, token_data: dict):
+    """
+    Save token usage to JSON file.
+
+    Args:
+        user_id (str): User identifier
+        token_data (dict): Token usage data
+    """
+    # Load existing data
+    if TOKEN_USAGE_FILE.exists() and TOKEN_USAGE_FILE.stat().st_size > 0:
+        try:
+            with open(TOKEN_USAGE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except json.JSONDecodeError:
+            logger.warning("Token usage file corrupted, creating new one")
+            data = {"runs": []}
+    else:
+        data = {"runs": []}
+        TOKEN_USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # Add current run
+    run_data = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_id": user_id,
+        "input_tokens": token_data.get("input_tokens", 0),
+        "output_tokens": token_data.get("output_tokens", 0),
+        "total_tokens": token_data.get("total_tokens", 0)
+    }
+    data["runs"].append(run_data)
+
+    # Save to file
+    with open(TOKEN_USAGE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"💾 Token usage saved: {run_data['total_tokens']} total tokens")
 
 
 def fetch_and_normalize_articles(
@@ -111,7 +152,7 @@ def fetch_and_normalize_articles(
     return all_articles
 
 
-def process_pipeline(user_id: str) -> Optional[str]:
+def process_pipeline(user_id: str) -> tuple[Optional[str], Optional[dict]]:
     """
     Run the complete pipeline for a single user.
 
@@ -119,7 +160,7 @@ def process_pipeline(user_id: str) -> Optional[str]:
         user_id (str): User identifier
 
     Returns:
-        Optional[str]: Formatted digest ready for email, or None if no digest
+        tuple: (Formatted digest ready for email or None, Token usage dict or None)
     """
     logger.info(f"Starting pipeline for user: {user_id}")
 
@@ -129,7 +170,7 @@ def process_pipeline(user_id: str) -> Optional[str]:
 
     if not topics:
         logger.warning(f"No topics configured for user {user_id}")
-        return None
+        return None, None
 
     # Default to 24 hours ago if no last_run
     if not last_run:
@@ -142,7 +183,7 @@ def process_pipeline(user_id: str) -> Optional[str]:
 
     if not articles:
         logger.warning("No articles fetched")
-        return "No new articles available for your topics today."
+        return "No new articles available for your topics today.", None
 
     # 3. Deduplication
     dedup_manager = DeduplicationManager()
@@ -150,7 +191,7 @@ def process_pipeline(user_id: str) -> Optional[str]:
 
     if not articles:
         logger.info("All articles were duplicates")
-        return "No new articles available (all were previously sent)."
+        return "No new articles available (all were previously sent).", None
 
     # 4. Ranking (reduced from 10 to 5 per category to fit all categories in LLM output)
     ranker = ImportanceRanker()
@@ -171,7 +212,7 @@ def process_pipeline(user_id: str) -> Optional[str]:
 
     if not filtered_by_category:
         logger.warning("No articles after filtering")
-        return "No high-quality articles available today."
+        return "No high-quality articles available today.", None
 
     # 6. LLM Formatting (increased token limit to fit all 9 categories)
     # Use Azure deployment name from environment variable
@@ -187,7 +228,9 @@ def process_pipeline(user_id: str) -> Optional[str]:
     dedup_manager.mark_as_sent(all_urls)
 
     logger.info(f"Pipeline complete. Formatted {len(all_urls)} articles")
-    return formatted_digest
+
+    # Return formatted digest and token usage
+    return formatted_digest, formatter.token_usage
 
 
 def main():
@@ -218,7 +261,7 @@ def main():
 
             try:
                 # Run pipeline
-                digest_content = process_pipeline(user_id)
+                digest_content, token_usage = process_pipeline(user_id)
 
                 if digest_content:
                     # Send email
@@ -228,6 +271,10 @@ def main():
                         body=digest_content,
                         receivers=[email]
                     )
+
+                    # Save token usage to file
+                    if token_usage:
+                        save_token_usage(user_id, token_usage)
 
                     # Update last run timestamp
                     update_last_run_timestamp(user_id)

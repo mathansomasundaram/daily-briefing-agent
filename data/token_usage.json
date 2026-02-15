@@ -1,0 +1,11 @@
+{
+  "runs": [
+    {
+      "timestamp": "2026-02-15T09:47:36.273542+00:00",
+      "user_id": "user1",
+      "input_tokens": 2232,
+      "output_tokens": 1307,
+      "total_tokens": 3539
+    }
+  ]
+}

@@ -54,6 +54,8 @@ URL_TO_SOURCE = {
     "indiatoday.in": "India Today",
     "timesofindia.indiatimes.com": "Times of India",
     "thehindubusinessline.com": "Business Line",
+    "thehindu.com": "The Hindu",
+    "newindianexpress.com": "New Indian Express",
 }
 
 def get_source_name_from_url(url: str) -> str:
@@ -94,6 +96,7 @@ RSS_SOURCES = {
         "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms",
         "https://www.moneycontrol.com/rss/latestnews.xml",
         "https://www.moneycontrol.com/rss/marketreports.xml",
+        "https://indianexpress.com/section/business/market/feed/",
         "https://www.livemint.com/rss/markets",
         "https://www.livemint.com/rss/money",
         "https://timesofindia.indiatimes.com/rssfeeds/1898055.cms",  
@@ -117,9 +120,16 @@ RSS_SOURCES = {
         "https://economictimes.indiatimes.com/markets/ipo/rssfeeds/61225961.cms"
     ],
     "fii_dii": [
-        "https://www.moneycontrol.com/rss/marketoutlook.xml",  
-        "https://economictimes.indiatimes.com/markets/stocks/news/rssfeeds/2146449.cms",  
-        "https://www.livemint.com/rss/money"  
+        "https://www.moneycontrol.com/rss/marketoutlook.xml",
+        "https://economictimes.indiatimes.com/markets/stocks/news/rssfeeds/2146449.cms",
+        "https://www.livemint.com/rss/money"
+    ],
+    "state_news_tn": [
+        "https://www.thehindu.com/news/national/tamil-nadu/feeder/default.rss",
+        "https://www.newindianexpress.com/states/tamil-nadu/?widgetName=rssfeed&widgetId=429436&getXmlFeed=true"
+    ],
+    "india_economy" : [
+        "https://www.thehindu.com/business/Economy/feeder/default.rss"
     ]
 }
 
@@ -133,7 +143,9 @@ CATEGORY_DISPLAY_NAMES = {
     "commodities": "💰 Commodities (Gold & Silver)",
     "fii_dii": "💼 FII & DII Activity",
     "ipos": "🚀 Upcoming IPOs",
-    "company_results": "🏢 Company Results & Announcements"
+    "company_results": "🏢 Company Results & Announcements",
+    "india_economy": "📊 Indian Economy",
+    "state_news_tn": "📍 Tamil Nadu & Coimbatore News"
 }
 
 # Source reputation scores (used by ranking engine)
@@ -142,8 +154,8 @@ SOURCE_REPUTATION = {
     "Bloomberg": 3.0,
     "Financial Times": 3.0,
     "The Wall Street Journal": 3.0,
-    "Economic Times": 2.5,
-    "Moneycontrol": 2.3,
+    "Economic Times": 2.9,
+    "Moneycontrol": 3.0,
     "Mint": 2.5,
     "Times of India": 2.2,
     "India Today": 2.2,
@@ -158,6 +170,11 @@ SOURCE_REPUTATION = {
     "BleepingComputer": 2.0,
     "Investing.com": 2.2,
     "Kitco": 2.1,
+    "The Hindu": 2.6,
+    "New Indian Express": 2.3,
+    "The New York Times": 2.8,
+    "Ars Technica": 2.1,
+    "Security Week": 2.0,
     "Unknown Source": 1.0
 }
 
