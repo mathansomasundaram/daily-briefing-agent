@@ -1,0 +1,21 @@
+{
+  "users": [
+    {
+      "user_id": "user1",
+      "email": "mathans2609@gmail.com",
+      "topics": [
+        "geopolitics",
+        "us_fed",
+        "commodities",
+        "indian_stocks",
+        "fii_dii",
+        "ipos",
+        "company_results",
+        "tech_ai",
+        "tech_cybersecurity"
+      ],
+      "last_run_timestamp": "2026-02-14T17:18:51.432692Z",
+      "active": true
+    }
+  ]
+}

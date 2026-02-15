@@ -1,47 +1,251 @@
 """
-Main execution module.
+Main orchestrator for Daily Briefing Agent.
+Coordinates the entire pipeline from news aggregation to email delivery.
 """
 
-from openai import OpenAI
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+from datetime import datetime, timezone
+from typing import Optional
+import os
+from openai import AzureOpenAI
 from dotenv import load_dotenv
 
-from google_sheets import get_receivers_from_sheet
+# Import all modules
+from src.user_config.user_manager import (
+    get_active_users,
+    get_user_topics,
+    get_last_run_timestamp,
+    update_last_run_timestamp
+)
+from src.aggregation.rss_aggregator import RSSAggregator
+from src.normalization.normalizer import ArticleNormalizer
+from src.deduplication.dedup_manager import DeduplicationManager
+from src.ranking.ranker import ImportanceRanker
+from src.filtering.content_filter import ContentFilter
+from src.llm_formatter.formatter import LLMFormatter
+from src.market_calendar import get_active_topics_for_date, get_market_status
 from email_service import send_email
-from config import PROMPT, OPENAI_MODEL, MAX_OUTPUT_TOKENS, EMAIL_SUBJECT
+from utils.logger import setup_logger
+from utils.date_utils import parse_timestamp
+from config import EMAIL_SUBJECT
 
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI client
-client = OpenAI()  # API key picked automatically from env
+# Setup logger
+logger = setup_logger(__name__)
+
+# Initialize Azure OpenAI client
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+)
 
 
-def generate_daily_digest():
-    """Generate daily market and tech digest using OpenAI."""
-    response = client.responses.create(
-        model=OPENAI_MODEL,
-        input=PROMPT,
-        max_output_tokens=MAX_OUTPUT_TOKENS
-    )
-    return response.output_text
+def fetch_and_normalize_articles(
+    topics: list,
+    since_timestamp: str
+) -> list:
+    """
+    Fetch articles from all sources and normalize them.
+    Automatically skips market-related topics if Indian markets are closed.
+
+    Args:
+        topics (list): List of topic categories
+        since_timestamp (str): Fetch articles since this timestamp
+
+    Returns:
+        list: Normalized articles
+    """
+    # Check market status and filter topics accordingly
+    today = datetime.now(timezone.utc).date()
+    market_status = get_market_status(today)
+    active_topics = get_active_topics_for_date(topics, today)
+
+    # Log market status
+    if market_status["is_holiday"]:
+        logger.info(f"📅 Market Status: CLOSED ({market_status['reason']})")
+        logger.info(f"⏭️  Next trading day: {market_status['next_trading_day']}")
+
+        skipped_topics = [t for t in topics if t not in active_topics]
+        if skipped_topics:
+            logger.info(f"⏸️  Skipping market topics: {', '.join(skipped_topics)}")
+    else:
+        logger.info(f"📈 Market Status: OPEN")
+
+    logger.info(f"📰 Fetching articles for topics: {active_topics}")
+
+    # Parse timestamp
+    since_dt = parse_timestamp(since_timestamp)
+    if since_dt is None:
+        # Default to 24 hours ago
+        since_dt = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Initialize aggregators
+    rss_agg = RSSAggregator()
+    normalizer = ArticleNormalizer()
+
+    all_articles = []
+
+    # Fetch from RSS feeds (only for active topics)
+    for topic in active_topics:
+        try:
+            logger.info(f"Fetching RSS articles for: {topic}")
+            rss_articles = rss_agg.fetch_articles(topic, since_dt)
+
+            # Normalize
+            normalized_rss = normalizer.normalize_batch(rss_articles, source_type="rss", category=topic)
+            all_articles.extend(normalized_rss)
+
+        except Exception as e:
+            logger.error(f"Error fetching RSS for {topic}: {e}", exc_info=True)
+
+    logger.info(f"Total articles fetched and normalized: {len(all_articles)}")
+    return all_articles
+
+
+def process_pipeline(user_id: str) -> Optional[str]:
+    """
+    Run the complete pipeline for a single user.
+
+    Args:
+        user_id (str): User identifier
+
+    Returns:
+        Optional[str]: Formatted digest ready for email, or None if no digest
+    """
+    logger.info(f"Starting pipeline for user: {user_id}")
+
+    # 1. Load user configuration
+    topics = get_user_topics(user_id)
+    last_run = get_last_run_timestamp(user_id)
+
+    if not topics:
+        logger.warning(f"No topics configured for user {user_id}")
+        return None
+
+    # Default to 24 hours ago if no last_run
+    if not last_run:
+        last_run = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
+
+    logger.info(f"User topics: {topics}, Last run: {last_run}")
+
+    # 2. Fetch and normalize articles
+    articles = fetch_and_normalize_articles(topics, last_run)
+
+    if not articles:
+        logger.warning("No articles fetched")
+        return "No new articles available for your topics today."
+
+    # 3. Deduplication
+    dedup_manager = DeduplicationManager()
+    articles = dedup_manager.filter_duplicates(articles)
+
+    if not articles:
+        logger.info("All articles were duplicates")
+        return "No new articles available (all were previously sent)."
+
+    # 4. Ranking (reduced from 10 to 5 per category to fit all categories in LLM output)
+    ranker = ImportanceRanker()
+    articles_by_category = ranker.rank_by_category(articles, n_per_category=5)
+
+    # 5. Content filtering
+    content_filter = ContentFilter()
+    filtered_by_category = {}
+
+    for category, category_articles in articles_by_category.items():
+        filtered = content_filter.process_all(
+            category_articles,
+            max_summary_length=200,  # Reduced from 300 to fit more categories
+            max_tokens=1500  # Reduced from 2000 to allow all categories
+        )
+        if filtered:
+            filtered_by_category[category] = filtered
+
+    if not filtered_by_category:
+        logger.warning("No articles after filtering")
+        return "No high-quality articles available today."
+
+    # 6. LLM Formatting (increased token limit to fit all 9 categories)
+    # Use Azure deployment name from environment variable
+    deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
+    formatter = LLMFormatter(client, model=deployment_name, max_output_tokens=4000)
+    formatted_digest = formatter.format_digest(filtered_by_category)
+
+    # 7. Mark articles as sent
+    all_urls = []
+    for articles_list in filtered_by_category.values():
+        all_urls.extend([a["url"] for a in articles_list])
+
+    dedup_manager.mark_as_sent(all_urls)
+
+    logger.info(f"Pipeline complete. Formatted {len(all_urls)} articles")
+    return formatted_digest
 
 
 def main():
-    """Main execution function."""
+    """
+    Main execution function.
+    Processes all active users and sends daily digests.
+    """
     try:
-        # Generate the daily digest
-        digest_content = generate_daily_digest()
+        logger.info("=" * 60)
+        logger.info("Daily Briefing Agent - Starting")
+        logger.info("=" * 60)
 
-        # Get email receivers from Google Sheets
-        receivers = get_receivers_from_sheet()
+        # Get all active users
+        users = get_active_users()
 
-         # Send the digest via email
-        send_email(
-            subject=EMAIL_SUBJECT,
-            body=digest_content,
-            receivers=receivers
-        )
+        if not users:
+            logger.warning("No active users found")
+            return
+
+        logger.info(f"Processing {len(users)} active user(s)")
+
+        # Process each user
+        for user in users:
+            user_id = user["user_id"]
+            email = user["email"]
+
+            logger.info(f"\nProcessing user: {user_id} ({email})")
+
+            try:
+                # Run pipeline
+                digest_content = process_pipeline(user_id)
+
+                if digest_content:
+                    # Send email
+                    logger.info(f"Sending email to {email}")
+                    send_email(
+                        subject=EMAIL_SUBJECT,
+                        body=digest_content,
+                        receivers=[email]
+                    )
+
+                    # Update last run timestamp
+                    update_last_run_timestamp(user_id)
+                    logger.info(f"Successfully sent digest to {email}")
+
+                else:
+                    logger.warning(f"No digest generated for {user_id}")
+
+            except Exception as e:
+                logger.error(f"Error processing user {user_id}: {e}", exc_info=True)
+                # Continue with next user
+
+        logger.info("\n" + "=" * 60)
+        logger.info("Daily Briefing Agent - Completed")
+        logger.info("=" * 60)
+
     except Exception as e:
+        logger.error(f"Fatal error in main: {e}", exc_info=True)
         raise
 
 
