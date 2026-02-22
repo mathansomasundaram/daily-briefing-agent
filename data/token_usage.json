@@ -6,6 +6,13 @@
       "input_tokens": 2232,
       "output_tokens": 1307,
       "total_tokens": 3539
+    },
+    {
+      "timestamp": "2026-02-22T14:59:35.279681+00:00",
+      "user_id": "user1",
+      "input_tokens": 3226,
+      "output_tokens": 1566,
+      "total_tokens": 4792
     }
   ]
 }

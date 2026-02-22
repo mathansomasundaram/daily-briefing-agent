@@ -1,22 +1,16 @@
 """
 Main orchestrator for Daily Briefing Agent.
-Coordinates the entire pipeline from news aggregation to email delivery.
+Refactored for production-grade quality.
 """
 
-import sys
-from pathlib import Path
-
-# Add project root to Python path
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root))
-
-from datetime import datetime, timezone
-from typing import Optional
 import os
+from pathlib import Path
+from datetime import datetime, timezone
+from typing import Optional, Tuple
+
 from openai import AzureOpenAI
 from dotenv import load_dotenv
 
-# Import all modules
 from src.user_config.user_manager import (
     get_active_users,
     get_user_topics,
@@ -30,17 +24,27 @@ from src.ranking.ranker import ImportanceRanker
 from src.filtering.content_filter import ContentFilter
 from src.llm_formatter.formatter import LLMFormatter
 from src.market_calendar import get_active_topics_for_date, get_market_status
+from src.token_tracker import TokenTracker
 from email_service import send_email
 from utils.logger import setup_logger
 from utils.date_utils import parse_timestamp
 from config import EMAIL_SUBJECT
-import json
+from src.exceptions import (
+    DailyBriefingError,
+    ArticleFetchError,
+    FormattingError,
+    EmailDeliveryError
+)
 
 # Load environment variables
 load_dotenv()
 
 # Setup logger
 logger = setup_logger(__name__)
+
+# Project paths
+PROJECT_ROOT = Path(__file__).parent
+DATA_DIR = PROJECT_ROOT / "data"
 
 # Initialize Azure OpenAI client
 client = AzureOpenAI(
@@ -49,143 +53,109 @@ client = AzureOpenAI(
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", "")
 )
 
-# Token usage file path
-TOKEN_USAGE_FILE = project_root / "data" / "token_usage.json"
+# Initialize token tracker
+token_tracker = TokenTracker(DATA_DIR)
 
 
-def save_token_usage(user_id: str, token_data: dict):
+def fetch_articles(topics: list, since_timestamp: str) -> list:
     """
-    Save token usage to JSON file.
+    Fetch and normalize articles for given topics.
 
     Args:
-        user_id (str): User identifier
-        token_data (dict): Token usage data
-    """
-    # Load existing data
-    if TOKEN_USAGE_FILE.exists() and TOKEN_USAGE_FILE.stat().st_size > 0:
-        try:
-            with open(TOKEN_USAGE_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except json.JSONDecodeError:
-            logger.warning("Token usage file corrupted, creating new one")
-            data = {"runs": []}
-    else:
-        data = {"runs": []}
-        TOKEN_USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    # Add current run
-    run_data = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "user_id": user_id,
-        "input_tokens": token_data.get("input_tokens", 0),
-        "output_tokens": token_data.get("output_tokens", 0),
-        "total_tokens": token_data.get("total_tokens", 0)
-    }
-    data["runs"].append(run_data)
-
-    # Save to file
-    with open(TOKEN_USAGE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-    logger.info(f"💾 Token usage saved: {run_data['total_tokens']} total tokens")
-
-
-def fetch_and_normalize_articles(
-    topics: list,
-    since_timestamp: str
-) -> list:
-    """
-    Fetch articles from all sources and normalize them.
-    Automatically skips market-related topics if Indian markets are closed.
-
-    Args:
-        topics (list): List of topic categories
-        since_timestamp (str): Fetch articles since this timestamp
+        topics: List of topic categories
+        since_timestamp: Fetch articles since this timestamp
 
     Returns:
-        list: Normalized articles
+        List of normalized articles
+
+    Raises:
+        ArticleFetchError: If article fetching fails critically
     """
-    # Check market status and filter topics accordingly
     today = datetime.now(timezone.utc).date()
     market_status = get_market_status(today)
     active_topics = get_active_topics_for_date(topics, today)
 
     # Log market status
     if market_status["is_holiday"]:
-        logger.info(f"📅 Market Status: CLOSED ({market_status['reason']})")
-        logger.info(f"⏭️  Next trading day: {market_status['next_trading_day']}")
-
-        skipped_topics = [t for t in topics if t not in active_topics]
-        if skipped_topics:
-            logger.info(f"⏸️  Skipping market topics: {', '.join(skipped_topics)}")
+        logger.info("Market Status: CLOSED (%s)", market_status['reason'])
+        logger.info("Next trading day: %s", market_status['next_trading_day'])
+        skipped = [t for t in topics if t not in active_topics]
+        if skipped:
+            logger.info("Skipping market topics: %s", ', '.join(skipped))
     else:
-        logger.info(f"📈 Market Status: OPEN")
+        logger.info("Market Status: OPEN")
 
-    logger.info(f"📰 Fetching articles for topics: {active_topics}")
+    logger.info("Fetching articles for topics: %s", active_topics)
 
-    # Parse timestamp
+    # Parse timestamp with fallback
     since_dt = parse_timestamp(since_timestamp)
     if since_dt is None:
-        # Default to 24 hours ago
-        since_dt = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        since_dt = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
 
-    # Initialize aggregators
+    # Fetch from RSS feeds
     rss_agg = RSSAggregator()
     normalizer = ArticleNormalizer()
-
     all_articles = []
 
-    # Fetch from RSS feeds (only for active topics)
     for topic in active_topics:
         try:
-            logger.info(f"Fetching RSS articles for: {topic}")
+            logger.info("Fetching RSS articles for: %s", topic)
             rss_articles = rss_agg.fetch_articles(topic, since_dt)
-
-            # Normalize
-            normalized_rss = normalizer.normalize_batch(rss_articles, source_type="rss", category=topic)
-            all_articles.extend(normalized_rss)
-
+            normalized = normalizer.normalize_batch(
+                rss_articles,
+                source_type="rss",
+                category=topic
+            )
+            all_articles.extend(normalized)
         except Exception as e:
-            logger.error(f"Error fetching RSS for {topic}: {e}", exc_info=True)
+            logger.error("Error fetching RSS for %s: %s", topic, str(e), exc_info=True)
+            # Continue with other topics
 
-    logger.info(f"Total articles fetched and normalized: {len(all_articles)}")
+    logger.info("Total articles fetched: %d", len(all_articles))
     return all_articles
 
 
-def process_pipeline(user_id: str) -> tuple[Optional[str], Optional[dict]]:
+def process_user_pipeline(user_id: str) -> Tuple[Optional[str], Optional[dict]]:
     """
     Run the complete pipeline for a single user.
 
     Args:
-        user_id (str): User identifier
+        user_id: User identifier
 
     Returns:
-        tuple: (Formatted digest ready for email or None, Token usage dict or None)
+        Tuple of (formatted digest or None, token usage dict or None)
     """
-    logger.info(f"Starting pipeline for user: {user_id}")
+    logger.info("Starting pipeline for user: %s", user_id)
 
-    # 1. Load user configuration
+    # Load user configuration
     topics = get_user_topics(user_id)
     last_run = get_last_run_timestamp(user_id)
 
     if not topics:
-        logger.warning(f"No topics configured for user {user_id}")
+        logger.warning("No topics configured for user %s", user_id)
         return None, None
 
     # Default to 24 hours ago if no last_run
     if not last_run:
-        last_run = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
+        last_run = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).isoformat() + 'Z'
 
-    logger.info(f"User topics: {topics}, Last run: {last_run}")
+    logger.info("User topics: %s, Last run: %s", topics, last_run)
 
-    # 2. Fetch and normalize articles
-    articles = fetch_and_normalize_articles(topics, last_run)
+    # Fetch articles
+    try:
+        articles = fetch_articles(topics, last_run)
+    except Exception as e:
+        raise ArticleFetchError(f"Failed to fetch articles: {e}") from e
 
     if not articles:
         logger.warning("No articles fetched")
         return "No new articles available for your topics today.", None
 
-    # 3. Deduplication
+    # Deduplication
     dedup_manager = DeduplicationManager()
     articles = dedup_manager.filter_duplicates(articles)
 
@@ -193,19 +163,19 @@ def process_pipeline(user_id: str) -> tuple[Optional[str], Optional[dict]]:
         logger.info("All articles were duplicates")
         return "No new articles available (all were previously sent).", None
 
-    # 4. Ranking (reduced from 10 to 5 per category to fit all categories in LLM output)
+    # Ranking
     ranker = ImportanceRanker()
     articles_by_category = ranker.rank_by_category(articles, n_per_category=5)
 
-    # 5. Content filtering
+    # Content filtering
     content_filter = ContentFilter()
     filtered_by_category = {}
 
     for category, category_articles in articles_by_category.items():
         filtered = content_filter.process_all(
             category_articles,
-            max_summary_length=200,  # Reduced from 300 to fit more categories
-            max_tokens=1500  # Reduced from 2000 to allow all categories
+            max_summary_length=200,
+            max_tokens=1500
         )
         if filtered:
             filtered_by_category[category] = filtered
@@ -214,85 +184,109 @@ def process_pipeline(user_id: str) -> tuple[Optional[str], Optional[dict]]:
         logger.warning("No articles after filtering")
         return "No high-quality articles available today.", None
 
-    # 6. LLM Formatting (increased token limit to fit all 9 categories)
-    # Use Azure deployment name from environment variable
-    deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
-    formatter = LLMFormatter(client, model=deployment_name, max_output_tokens=4000)
-    formatted_digest = formatter.format_digest(filtered_by_category)
+    # LLM Formatting
+    try:
+        deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
+        formatter = LLMFormatter(client, model=deployment_name, max_output_tokens=4000)
+        formatted_digest = formatter.format_digest(filtered_by_category)
+    except Exception as e:
+        raise FormattingError(f"Failed to format digest: {e}") from e
 
-    # 7. Mark articles as sent
-    all_urls = []
-    for articles_list in filtered_by_category.values():
-        all_urls.extend([a["url"] for a in articles_list])
-
+    # Mark articles as sent
+    all_urls = [
+        article["url"]
+        for articles_list in filtered_by_category.values()
+        for article in articles_list
+    ]
     dedup_manager.mark_as_sent(all_urls)
 
-    logger.info(f"Pipeline complete. Formatted {len(all_urls)} articles")
+    logger.info("Pipeline complete. Formatted %d articles", len(all_urls))
 
-    # Return formatted digest and token usage
     return formatted_digest, formatter.token_usage
 
 
-def main():
+def process_user(user: dict) -> bool:
     """
-    Main execution function.
-    Processes all active users and sends daily digests.
-    """
-    try:
-        logger.info("=" * 60)
-        logger.info("Daily Briefing Agent - Starting")
-        logger.info("=" * 60)
+    Process a single user's digest.
 
-        # Get all active users
+    Args:
+        user: User configuration dict
+
+    Returns:
+        True if successful, False otherwise
+    """
+    user_id = user["user_id"]
+    email = user["email"]
+
+    logger.info("Processing user: %s (%s)", user_id, email)
+
+    try:
+        # Run pipeline
+        digest_content, token_usage = process_user_pipeline(user_id)
+
+        if not digest_content:
+            logger.warning("No digest generated for %s", user_id)
+            return False
+
+        # Send email
+        logger.info("Sending email to %s", email)
+        try:
+            send_email(
+                subject=EMAIL_SUBJECT,
+                body=digest_content,
+                receivers=[email]
+            )
+        except Exception as e:
+            raise EmailDeliveryError(f"Failed to send email: {e}") from e
+
+        # Save token usage
+        if token_usage:
+            token_tracker.save(user_id, token_usage)
+
+        # Update last run timestamp
+        update_last_run_timestamp(user_id)
+        logger.info("Successfully sent digest to %s", email)
+        return True
+
+    except DailyBriefingError as e:
+        logger.error("Pipeline error for %s: %s", user_id, str(e), exc_info=True)
+        return False
+    except Exception as e:
+        logger.error("Unexpected error for %s: %s", user_id, str(e), exc_info=True)
+        return False
+
+
+def main():
+    """Main execution function."""
+    logger.info("=" * 60)
+    logger.info("Daily Briefing Agent - Starting")
+    logger.info("=" * 60)
+
+    try:
         users = get_active_users()
 
         if not users:
             logger.warning("No active users found")
             return
 
-        logger.info(f"Processing {len(users)} active user(s)")
+        logger.info("Processing %d active user(s)", len(users))
 
         # Process each user
+        success_count = 0
         for user in users:
-            user_id = user["user_id"]
-            email = user["email"]
-
-            logger.info(f"\nProcessing user: {user_id} ({email})")
-
-            try:
-                # Run pipeline
-                digest_content, token_usage = process_pipeline(user_id)
-
-                if digest_content:
-                    # Send email
-                    logger.info(f"Sending email to {email}")
-                    send_email(
-                        subject=EMAIL_SUBJECT,
-                        body=digest_content,
-                        receivers=[email]
-                    )
-
-                    # Save token usage to file
-                    if token_usage:
-                        save_token_usage(user_id, token_usage)
-
-                    # Update last run timestamp
-                    update_last_run_timestamp(user_id)
-                    logger.info(f"Successfully sent digest to {email}")
-
-                else:
-                    logger.warning(f"No digest generated for {user_id}")
-
-            except Exception as e:
-                logger.error(f"Error processing user {user_id}: {e}", exc_info=True)
-                # Continue with next user
+            if process_user(user):
+                success_count += 1
 
         logger.info("\n" + "=" * 60)
-        logger.info("Daily Briefing Agent - Completed")
+        logger.info(
+            "Daily Briefing Agent - Completed (%d/%d successful)",
+            success_count,
+            len(users)
+        )
         logger.info("=" * 60)
 
     except Exception as e:
-        logger.error(f"Fatal error in main: {e}", exc_info=True)
+        logger.error("Fatal error in main: %s", str(e), exc_info=True)
         raise
 
 
