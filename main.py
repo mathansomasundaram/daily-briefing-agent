@@ -3,13 +3,10 @@ Main orchestrator for Daily Briefing Agent.
 Refactored for production-grade quality.
 """
 
-import os
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from openai import AzureOpenAI
-from dotenv import load_dotenv
 
 from src.user_config.user_manager import (
     get_active_users,
@@ -25,10 +22,22 @@ from src.filtering.content_filter import ContentFilter
 from src.llm_formatter.formatter import LLMFormatter
 from src.market_calendar import get_active_topics_for_date, get_market_status
 from src.token_tracker import TokenTracker
+from src.settings import (
+    AZURE_OPENAI_API_KEY,
+    AZURE_OPENAI_ENDPOINT,
+    AZURE_OPENAI_API_VERSION,
+    AZURE_OPENAI_DEPLOYMENT_NAME,
+    AZURE_OPENAI_MAX_OUTPUT_TOKENS,
+    EMAIL_SUBJECT,
+    DATA_DIR,
+    ARTICLES_PER_CATEGORY,
+    MAX_SUMMARY_LENGTH,
+    MAX_TOKENS_PER_ARTICLE,
+    ensure_directories
+)
 from email_service import send_email
 from utils.logger import setup_logger
 from utils.date_utils import parse_timestamp
-from config import EMAIL_SUBJECT
 from src.exceptions import (
     DailyBriefingError,
     ArticleFetchError,
@@ -36,21 +45,17 @@ from src.exceptions import (
     EmailDeliveryError
 )
 
-# Load environment variables
-load_dotenv()
-
 # Setup logger
 logger = setup_logger(__name__)
 
-# Project paths
-PROJECT_ROOT = Path(__file__).parent
-DATA_DIR = PROJECT_ROOT / "data"
+# Ensure directories exist
+ensure_directories()
 
 # Initialize Azure OpenAI client
 client = AzureOpenAI(
-    api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", "")
+    api_key=AZURE_OPENAI_API_KEY,
+    api_version=AZURE_OPENAI_API_VERSION,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT
 )
 
 # Initialize token tracker
@@ -165,7 +170,10 @@ def process_user_pipeline(user_id: str) -> Tuple[Optional[str], Optional[dict]]:
 
     # Ranking
     ranker = ImportanceRanker()
-    articles_by_category = ranker.rank_by_category(articles, n_per_category=5)
+    articles_by_category = ranker.rank_by_category(
+        articles,
+        n_per_category=ARTICLES_PER_CATEGORY
+    )
 
     # Content filtering
     content_filter = ContentFilter()
@@ -174,8 +182,8 @@ def process_user_pipeline(user_id: str) -> Tuple[Optional[str], Optional[dict]]:
     for category, category_articles in articles_by_category.items():
         filtered = content_filter.process_all(
             category_articles,
-            max_summary_length=200,
-            max_tokens=1500
+            max_summary_length=MAX_SUMMARY_LENGTH,
+            max_tokens=MAX_TOKENS_PER_ARTICLE
         )
         if filtered:
             filtered_by_category[category] = filtered
@@ -186,8 +194,11 @@ def process_user_pipeline(user_id: str) -> Tuple[Optional[str], Optional[dict]]:
 
     # LLM Formatting
     try:
-        deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
-        formatter = LLMFormatter(client, model=deployment_name, max_output_tokens=4000)
+        formatter = LLMFormatter(
+            client,
+            model=AZURE_OPENAI_DEPLOYMENT_NAME,
+            max_output_tokens=AZURE_OPENAI_MAX_OUTPUT_TOKENS
+        )
         formatted_digest = formatter.format_digest(filtered_by_category)
     except Exception as e:
         raise FormattingError(f"Failed to format digest: {e}") from e

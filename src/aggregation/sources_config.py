@@ -56,6 +56,7 @@ URL_TO_SOURCE = {
     "thehindubusinessline.com": "Business Line",
     "thehindu.com": "The Hindu",
     "newindianexpress.com": "New Indian Express",
+    "washingtonpost.com": "The Washington Post",
 }
 
 def get_source_name_from_url(url: str) -> str:
@@ -78,7 +79,9 @@ RSS_SOURCES = {
     "geopolitics": [
         "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
         "https://feeds.bbci.co.uk/news/world/rss.xml",
-        "https://www.aljazeera.com/xml/rss/all.xml"
+        "https://www.aljazeera.com/xml/rss/all.xml",
+        "https://www.reuters.com/rssfeed/worldNews",
+        "https://feeds.washingtonpost.com/rss/world"
     ],
     "tech_ai": [
         "https://techcrunch.com/feed/",
@@ -173,6 +176,7 @@ SOURCE_REPUTATION = {
     "The Hindu": 2.6,
     "New Indian Express": 2.3,
     "The New York Times": 2.8,
+    "The Washington Post": 2.9,
     "Ars Technica": 2.1,
     "Security Week": 2.0,
     "Unknown Source": 1.0

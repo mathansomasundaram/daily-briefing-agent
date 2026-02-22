@@ -4,7 +4,6 @@ Centralized application settings.
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -29,7 +28,7 @@ EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
 EMAIL_SUBJECT = "📰 Daily Market & Tech Briefing"
 
 # Pipeline settings
-ARTICLES_PER_CATEGORY = 5
+ARTICLES_PER_CATEGORY = 10  # Increased to capture more important news
 MAX_SUMMARY_LENGTH = 200
 MAX_TOKENS_PER_ARTICLE = 1500
 LLM_BATCH_SIZE = 5  # Process N categories at a time
